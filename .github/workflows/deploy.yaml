@@ -46,8 +46,7 @@ jobs:
     - name: Zip Lambda artifact
       run: |
         cd build
-        zip -r ${{
-matrix.lambda }}.zip ${{ matrix.lambda }}/*
+        zip -r ${{matrix.lambda }}.zip ${{ matrix.lambda }}/*
 
     - name: Deploy to AWS Lambda
       uses: aws-actions/aws-lambda-deploy@v1
