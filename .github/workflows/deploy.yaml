@@ -41,10 +41,16 @@ jobs:
     - name: Prepare Lambda artifact folder
       run: |
         mkdir -p build/${{ matrix.lambda }}
-        cp -r ${{ matrix.lambda }}/* build/${{ matrix.lambda }}/
+        rsync -av --exclude '.git' --exclude 'docs' --exclude 'infra' ${{ matrix.lambda }}/ build/${{ matrix.lambda }}/
+
+    - name: Zip Lambda artifact
+      run: |
+        cd build
+        zip -r ${{
+matrix.lambda }}.zip ${{ matrix.lambda }}/*
 
     - name: Deploy to AWS Lambda
       uses: aws-actions/aws-lambda-deploy@v1
       with:
         function-name: ${{ matrix.lambda }}
-        code-artifacts-dir: build/${{ matrix.lambda }}
+        zip-file: build/${{ matrix.lambda }}.zip
