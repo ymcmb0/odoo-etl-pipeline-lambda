@@ -24,7 +24,7 @@ This repository contains a free **serverless ETL pipeline** that integrates **Od
 
 ## Architecture Diagram
 
-<img src="docs/architecture.png" alt="Architecture Diagram" width="600">
+<img src="docs/architecture.png" alt="Architecture Diagram" width="700">
 
 **Data Flow:**
 
@@ -66,105 +66,100 @@ odoo-etl-pipeline-lambda/
 └── .gitignore
 ```
 
-
 ---
 
 ## Lambda Environment Variables
 
-- `ODOO_URL` – URL of Odoo instance
-- `ODOO_DB` – Odoo database name
-- `ODOO_USER` – Odoo username
-- `ODOO_PASS` – Odoo password
-- `AWS_REGION` – AWS region (default: `eu-north-1`)
-- `S3_BUCKET` – S3 bucket name for storing JSON files
+| Variable      | Description                         |
+|---------------|-------------------------------------|
+| `ODOO_URL`    | URL of the Odoo instance            |
+| `ODOO_DB`     | Odoo database name                  |
+| `ODOO_KEY`   | Odoo account key                       |
+| `AWS_REGION`  | AWS region (default: `eu-north-1`) |
+| `S3_BUCKET`   | S3 bucket name for storing JSON files |
 
 ---
 
 ## Setup
 
-**1. Clone repository**
+### 1. Clone the repository
 ```bash
 git clone https://github.com/<your-username>/odoo-etl-pipeline-lambda.git
 cd odoo-etl-pipeline-lambda
 ```
-**2. Install dependencies**
+---
+
+## 2. Install Dependencies
+
 ```bash
+# Lambda Extract
 cd lambda_extract
-
 pip install -r requirements.txt -t .
 
+# Lambda Serve
 cd ../lambda_serve
-
 pip install -r requirements.txt -t .
-
 ```
-**3. Configure GitHub Actions**
+## 3. Configure GitHub Actions
 ```bash
-Go to Settings → Secrets → Actions
-
-Add AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-
+- Go to Settings → Secrets → Actions
+- Add AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
 ```
 
-**4. Deploy**
+## 4. Deploy
 ```bash
-Push to main branch
-
-GitHub Actions automatically deploys Lambda functions
-
+- Push to main branch
+- GitHub Actions automatically deploys Lambda functions
 ```
 
 
-Usage
-Trigger Lambda Extract (via API Gateway)
+## 5. Usage
+
+### Trigger Lambda Extract (via API Gateway)
+
+```bash
 curl -X POST <API_GATEWAY_URL> \
 -H "Content-Type: application/json" \
 -d '{"table": "projects"}'
+```
 
-Access Data via Lambda Serve (Power BI)
+### Access Data via Lambda Serve (Power BI)
+```bash
 https://<API_GATEWAY_URL>?table=projects
-
-
 Response:
 
 {
   "url": "https://s3.amazonaws.com/..."
 }
+```
 
-Supported Tables
+## Supported Tables
 
-projects
+```bash
+- projects
+- sale_orders
+- invoices
+- partners
+- users
+- timesheets
+- project_updates
+```
 
-sale_orders
+## Contributing
 
-invoices
+```bash
+- Fork the repo
+- Create a feature branch: git checkout -b feature/my-feature
+- Commit your changes: git commit -m "Add new feature"
+- Push: git push origin feature/my-feature
+- Open a pull request
+```
 
-partners
-
-users
-
-timesheets
-
-project_updates
-
-Contributing
-
-Fork the repo
-
-Create a feature branch: git checkout -b feature/my-feature
-
-Commit your changes: git commit -m "Add new feature"
-
-Push: git push origin feature/my-feature
-
-Open a pull request
-
-License
+## License
 
 This project is licensed under the MIT License – see LICENSE
  for details.
 
-Author
-
-Rizwan Nisar – PMO & Aspiring Cloud Engineer
-LinkedIn
+## Author
+- Rizwan Nisar – Data/AI Engineer
+- [LinkedIn](https://www.linkedin.com/in/rizwan-n-12954b147/)
