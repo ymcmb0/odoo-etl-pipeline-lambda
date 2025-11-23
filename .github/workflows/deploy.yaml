@@ -40,11 +40,14 @@ jobs:
 
     - name: Prepare Lambda artifact folder
       run: |
+        rm -rf build/${{ matrix.lambda }}
         mkdir -p build/${{ matrix.lambda }}
-        rsync -av --exclude '.git' --exclude 'docs' --exclude 'infra' ${{ matrix.lambda }}/ build/${{ matrix.lambda }}/
+        rsync -av --exclude '.git' --exclude 'docs' --exclude 'infra' --exclude '*.venv*' ${{ matrix.lambda }}/ build/${{ matrix.lambda }}/
 
     - name: Deploy to AWS Lambda
       uses: aws-actions/aws-lambda-deploy@v1
       with:
         function-name: ${{ matrix.lambda }}
+        runtime: python3.9
+        handler: app.lambda_handler
         code-artifacts-dir: build/${{ matrix.lambda }}
