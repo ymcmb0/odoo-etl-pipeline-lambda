@@ -1,5 +1,3 @@
-name: Deploy Lambdas to AWS
-
 on:
   push:
     branches:
@@ -32,27 +30,22 @@ jobs:
       with:
         python-version: "3.9"
 
-    - name: Install dependencies
-    - run: |
-        mkdir -p build/${{ matrix.lambda }}
-        pip install -r ${{ matrix.lambda }}/requirements.txt -t build/${{ matrix.lambda }}
-        cp ${{ matrix.lambda }}/*.py build/${{ matrix.lambda }}
-
-    - name: Prepare Lambda artifact folder
+    - name: Prepare Lambda build folder
       run: |
-        rm -rf build/${{ matrix.lambda }}
         mkdir -p build/${{ matrix.lambda }}
-        rsync -av \
-          --exclude '.git' \
-          --exclude 'docs' \
-          --exclude 'infra' \
-          --exclude '*.venv*' \
-          ${{ matrix.lambda }}/ build/${{ matrix.lambda }}/
+
+    - name: Install dependencies
+      run: |
+        pip install -r ${{ matrix.lambda }}/requirements.txt -t build/${{ matrix.lambda }}
+
+    - name: Copy Lambda source code
+      run: |
+        cp ${{ matrix.lambda }}/*.py build/${{ matrix.lambda }}/
 
     - name: Deploy to AWS Lambda
       uses: aws-actions/aws-lambda-deploy@v1
       with:
         function-name: ${{ matrix.lambda }}
         runtime: python3.9
-        handler: lambda_function.lambda_handler   # FIXED HERE
+        handler: lambda_function.lambda_handler
         code-artifacts-dir: build/${{ matrix.lambda }}
