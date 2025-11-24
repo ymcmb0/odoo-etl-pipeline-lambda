@@ -33,10 +33,10 @@ jobs:
         python-version: "3.9"
 
     - name: Install dependencies
-      working-directory: ${{ matrix.lambda }}
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt -t .
+    - run: |
+        mkdir -p build/${{ matrix.lambda }}
+        pip install -r ${{ matrix.lambda }}/requirements.txt -t build/${{ matrix.lambda }}
+        cp ${{ matrix.lambda }}/*.py build/${{ matrix.lambda }}
 
     - name: Prepare Lambda artifact folder
       run: |
