@@ -14,15 +14,17 @@ AWS_REGION = os.getenv("AWS_REGION", "eu-north-1")
 S3_BUCKET = os.getenv("S3_BUCKET", "odoo-timesheet-bucket")
 
 # ===== Initialize S3 Client =====
+# The Lambda's Execution Role MUST have s3:GetObject and s3:PutObject permissions
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 
-# Local in-memory store of write_date timestamps (Note: In production, 
-# this should be persisted, but we'll leave it as is for now)
+# Local in-memory store of write_date timestamps (Not persisted across runs)
 last_load_times = {}
 
-# ===== Odoo Helpers (Unchanged) =====
+# ==============================================================================
+# Odoo and Data Helpers (Authentication, Read, Normalize)
+# ==============================================================================
+
 def odoo_authenticate():
-    # ... (Authentication code remains the same) ...
     payload = {
         "jsonrpc": "2.0",
         "method": "call",
@@ -34,6 +36,7 @@ def odoo_authenticate():
         "id": 1,
     }
     try:
+        # Use a short timeout for authentication
         res = requests.post(f"{ODOO_URL}/jsonrpc", json=payload, timeout=10).json()
         if "error" in res:
             print(f"Odoo Auth Error: {res['error']}")
@@ -44,11 +47,11 @@ def odoo_authenticate():
         return None
 
 def odoo_search_read(model, fields, domain=None, limit=0):
-    # ... (Search Read code remains the same) ...
     uid = odoo_authenticate()
     if not uid:
         print(f"Skipping search for {model} due to auth failure.")
         return []
+    
     domain = domain or []
     params = {
         "service": "object",
@@ -65,15 +68,15 @@ def odoo_search_read(model, fields, domain=None, limit=0):
     }
     payload = {"jsonrpc": "2.0", "method": "call", "params": params, "id": 2}
     try:
+        # Use a longer timeout for reading data
         res = requests.post(f"{ODOO_URL}/jsonrpc", json=payload, timeout=30)
-        res.raise_for_status()
+        res.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
         return res.json().get("result", [])
     except requests.exceptions.RequestException as e:
         print(f"HTTP Request Error during Odoo search_read for {model}: {e}")
         return []
 
 def normalize_odoo_row(row: dict) -> dict:
-    # ... (Normalization code remains the same) ...
     new_row = {}
     for k, v in row.items():
         if isinstance(v, list):
@@ -93,43 +96,66 @@ def normalize_odoo_row(row: dict) -> dict:
 def normalize_odoo_data(data: list) -> list:
     return [normalize_odoo_row(r) for r in data]
 
-# ===== S3 Upload (Unchanged) =====
+# ==============================================================================
+# S3 Upload and URL Generation (MODIFIED)
+# ==============================================================================
+
 def push_to_s3(table_name, data):
-    # ... (S3 Push code remains the same) ...
     if not data:
+        # If no data is found, we still return a response but skip the upload
         return {"status": "empty", "message": "No data to upload"}
 
     timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    key = f"{table_name}/{table_name}_{timestamp}.json"
-
-    # Upload timestamped file
+    latest_key = f"{table_name}/latest.json"
+    timestamped_key = f"{table_name}/{table_name}_{timestamp}.json"
+    
+    # 1. Upload timestamped file
     s3_client.put_object(
         Bucket=S3_BUCKET,
-        Key=key,
+        Key=timestamped_key,
         Body=json.dumps(data),
         ContentType="application/json"
     )
-    # Upload 'latest.json' file
-    latest_key = f"{table_name}/latest.json"
+    # 2. Upload 'latest.json' file
     s3_client.put_object(
         Bucket=S3_BUCKET,
         Key=latest_key,
         Body=json.dumps(data),
         ContentType="application/json"
     )
-    # Return the key for the latest file, as PBI needs this for the next step
-    return {"status": "success", "s3_key": latest_key, "rows_uploaded": len(data)}
+    
+    # 3. Generate a Pre-Signed URL for the 'latest.json' file
+    try:
+        # This URL is valid for 5 minutes (300 seconds)
+        presigned_url = s3_client.generate_presigned_url(
+            ClientMethod='get_object',
+            Params={'Bucket': S3_BUCKET, 'Key': latest_key},
+            ExpiresIn=300 
+        )
+    except Exception as e:
+        print(f"ERROR generating pre-signed URL: {e}")
+        return {"status": "error", "message": f"Could not generate S3 URL: {e}"}
+
+    # 4. Return the secure URL for Power BI
+    return {
+        "status": "success", 
+        "s3_key": latest_key, # Keep for debugging
+        "url": presigned_url, # <-- The field Power BI needs
+        "rows_uploaded": len(data)
+    }
 
 
-# ===== Lambda Handler (UPDATED) =====
+# ==============================================================================
+# Lambda Handler (UPDATED FOR SINGLE-TABLE EXECUTION)
+# ==============================================================================
+
 def lambda_handler(event, context):
     print("EVENT RECEIVED:", json.dumps(event))
 
     query_params = event.get("queryStringParameters", {})
-    # PBI query sends 'table' when it wants data, and 'trigger' when tableName is null.
     requested_table = query_params.get("table")
     
-    # --- MODEL & FIELD DEFINITIONS (Moved inside handler for scope) ---
+    # --- MODEL & FIELD DEFINITIONS ---
     all_tables = [
         "projects", "sale_orders", "invoices", "partners",
         "users", "timesheets", "project_updates"
@@ -149,10 +175,7 @@ def lambda_handler(event, context):
         "invoices": ["id", "name", "partner_id", "currency_id", "amount_total", "invoice_date", "payment_state", "invoice_date_due", "invoice_payment_term_id", "invoice_line_ids", "state", "write_date"],
     }
 
-    # ==========================
-    # 1. PROCESS ONLY THE REQUESTED TABLE (The ETL job)
-    # ==========================
-    final_result = {} # This will be the dict returned to PBI
+    final_result = {}
 
     if requested_table and requested_table in all_tables:
         table = requested_table
@@ -164,28 +187,22 @@ def lambda_handler(event, context):
         if not model or not fields:
             final_result = {"status": "error", "message": f"Table {table} configuration error"}
         else:
-            # 1a. Extract (Read from Odoo)
+            # 1. Extract (Read from Odoo)
             data = odoo_search_read(model, fields)
             
-            # 1b. Transform (Normalize data)
+            # 2. Transform (Normalize data)
             normalized = normalize_odoo_data(data)
 
-            # 1c. Load (Push to S3, updates 'latest.json')
+            # 3. Load (Push to S3 and generate URL)
             s3_upload_result = push_to_s3(table, normalized)
             
-            # 1d. Set the final result to return the S3 key
-            # We return only the S3 result for the specific table (e.g., {"status": "success", "s3_key": "projects/latest.json"})
+            # 4. Return the result (which contains the 'url' field)
             final_result = s3_upload_result
             
-            # OPTIONAL: You may want to update the combined file here as well, 
-            # but that increases latency. Best done on a separate schedule.
-            
-    elif requested_table:
-        final_result = {"status": "error", "message": f"Invalid table name: {requested_table}"}
     else:
-        # If no 'table' is supplied (e.g., PBI calls with trigger="1" or no params)
-        # We don't run the heavy ETL job, but we return a simple error or skip message 
-        # as PBI won't know what data to fetch next anyway.
-        final_result = {"status": "skipped", "message": "No table name provided for ETL process."}
+        # If no table is supplied or is invalid, return an error that Power BI can process
+        final_result = {"status": "error", "message": f"Missing or invalid 'table' parameter: {requested_table}"}
         
+    # API Gateway expects a dictionary response
     return final_result
+    
