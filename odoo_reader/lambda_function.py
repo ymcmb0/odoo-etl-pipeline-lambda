@@ -5,6 +5,7 @@ import boto3
 from datetime import datetime
 
 # ===== Environment Variables =====
+# Ensure these environment variables are set in your AWS Lambda configuration
 ODOO_URL = os.getenv("ODOO_URL", "").strip()
 ODOO_DB = os.getenv("ODOO_DB", "").strip()
 ODOO_USER = os.getenv("ODOO_USER", "").strip()
@@ -14,14 +15,10 @@ AWS_REGION = os.getenv("AWS_REGION", "eu-north-1")
 S3_BUCKET = os.getenv("S3_BUCKET", "odoo-timesheet-bucket")
 
 # ===== Initialize S3 Client =====
-# The Lambda's Execution Role MUST have s3:GetObject and s3:PutObject permissions
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 
-# Local in-memory store of write_date timestamps (Not persisted across runs)
-last_load_times = {}
-
 # ==============================================================================
-# Odoo and Data Helpers (Authentication, Read, Normalize)
+# Odoo and Data Helpers
 # ==============================================================================
 
 def odoo_authenticate():
@@ -36,7 +33,6 @@ def odoo_authenticate():
         "id": 1,
     }
     try:
-        # Use a short timeout for authentication
         res = requests.post(f"{ODOO_URL}/jsonrpc", json=payload, timeout=10).json()
         if "error" in res:
             print(f"Odoo Auth Error: {res['error']}")
@@ -68,9 +64,8 @@ def odoo_search_read(model, fields, domain=None, limit=0):
     }
     payload = {"jsonrpc": "2.0", "method": "call", "params": params, "id": 2}
     try:
-        # Use a longer timeout for reading data
         res = requests.post(f"{ODOO_URL}/jsonrpc", json=payload, timeout=30)
-        res.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
+        res.raise_for_status()
         return res.json().get("result", [])
     except requests.exceptions.RequestException as e:
         print(f"HTTP Request Error during Odoo search_read for {model}: {e}")
@@ -102,7 +97,6 @@ def normalize_odoo_data(data: list) -> list:
 
 def push_to_s3(table_name, data):
     if not data:
-        # If no data is found, we still return a response but skip the upload
         return {"status": "empty", "message": "No data to upload"}
 
     timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -139,14 +133,14 @@ def push_to_s3(table_name, data):
     # 4. Return the secure URL for Power BI
     return {
         "status": "success", 
-        "s3_key": latest_key, # Keep for debugging
+        "s3_key": latest_key, 
         "url": presigned_url, # <-- The field Power BI needs
         "rows_uploaded": len(data)
     }
 
 
 # ==============================================================================
-# Lambda Handler (UPDATED FOR SINGLE-TABLE EXECUTION)
+# Lambda Handler (FINAL LOGIC)
 # ==============================================================================
 
 def lambda_handler(event, context):
@@ -154,77 +148,112 @@ def lambda_handler(event, context):
 
     query_params = event.get("queryStringParameters", {})
     requested_table = query_params.get("table")
-    trigger_flag = query_params.get("trigger") # <-- Capture the new flag
+    trigger_flag = query_params.get("trigger")
 
-    # --- MODEL & FIELD DEFINITIONS (unchanged) ---
+    # --- MODEL & FIELD DEFINITIONS ---
     all_tables = [
         "projects", "sale_orders", "invoices", "partners",
         "users", "timesheets", "project_updates"
     ]
-    # ... (table_model_map and table_fields unchanged) ...
+    table_model_map = {
+        "projects": "project.project", "sale_orders": "sale.order", "partners": "res.partner", 
+        "users": "res.users", "invoices": "account.move", "project_updates": "project.update", 
+        "timesheets": "account.analytic.line",
+    }
+    table_fields = {
+        "projects": ["id", "display_name", "allocated_hours", "date_start", "date", "description", "partner_id", "sale_order_id", "update_ids", "user_id", "tag_ids", "stage_id", "write_date"],
+        "sale_orders": ["id", "name", "display_name", "partner_id", "amount_total", "amount_untaxed", "amount_unpaid", "amount_paid", "amount_invoiced", "amount_to_invoice", "margin", "approva_state", "state", "date_order", "pricelist_id", "opportunity_id", "payment_term_id", "project_ids", "invoice_ids", "user_id", "write_date"],
+        "partners": ["id", "name", "write_date"],
+        "users": ["id", "name", "write_date"],
+        "timesheets": ["id", "name", "employee_id", "user_id", "department_id", "project_id", "validated_status", "date", "unit_amount", "task_id", "timesheet_invoice_type", "write_date"],
+        "project_updates": ["id", "name", "project_id", "user_id", "date", "write_date", "progress", "description"],
+        "invoices": ["id", "name", "partner_id", "currency_id", "amount_total", "invoice_date", "payment_state", "invoice_date_due", "invoice_payment_term_id", "invoice_line_ids", "state", "write_date"],
+    }
 
     final_result = {}
-    
-    # DETERMINE TABLES TO LOAD
     tables_to_load = []
     
+    # --- 1. DETERMINE EXECUTION MODE ---
     if requested_table and requested_table in all_tables:
-        # Scenario 2: Data Fetch Mode (Load single table)
+        # Scenario 1: Data Fetch Mode (Single table read/write)
         tables_to_load = [requested_table]
         
     elif trigger_flag == "1":
-        # Scenario 1: Trigger Mode (Load ALL tables)
+        # Scenario 2: Trigger Mode (Full multi-table load)
         tables_to_load = all_tables
         
     else:
-        # Error condition
+        # Invalid parameters
         return {"status": "error", "message": f"Missing or invalid parameter. Requested table: {requested_table}"}
 
 
-    # --- EXECUTE ETL ---
-    if tables_to_load:
-        # Only run the full combined load if the trigger flag is set
-        if len(tables_to_load) > 1:
-            print("Running FULL Multi-Table ETL (Trigger Mode)")
-            # Your old multi-table loop logic goes here:
-            results = {}
-            all_rows = []
-            
-            for table in tables_to_load:
-                # ... (existing single-table ETL logic: odoo_search_read, normalize) ...
-                # Use the existing logic here for ALL tables
-                model = table_model_map.get(table)
-                fields = table_fields.get(table)
-                data = odoo_search_read(model, fields)
-                normalized = normalize_odoo_data(data)
-                
-                # Push the single table to S3 (updates latest.json)
-                push_to_s3(table, normalized)
-                
-                # Append to all_rows for the combined file
-                for row in normalized:
-                    row_with_table = {"table": table}
-                    row_with_table.update(row)
-                    all_rows.append(row_with_table)
-            
-            # PUSH COMBINED FILE (all_data)
-            if len(all_rows) > 0:
-                # Use your existing logic for pushing all_data/latest.json
-                # You'll need a new helper or move the all_data logic back in here.
-                # For simplicity, let's just return a success message in this mode.
-                final_result = {"status": "success", "message": f"Successfully triggered and updated {len(tables_to_load)} tables."}
-
-        else:
-            # Load single table (Data Fetch Mode)
-            table = tables_to_load[0]
-            print(f"Running SINGLE Table ETL (Read Mode) for: {table}")
-            
+    # --- 2. EXECUTE ETL ---
+    if len(tables_to_load) > 1:
+        # Full Multi-Table ETL (Trigger Mode)
+        print("Running FULL Multi-Table ETL (Trigger Mode)")
+        all_rows = []
+        
+        for table in tables_to_load:
+            print(f"  -> Loading table: {table}")
             model = table_model_map.get(table)
             fields = table_fields.get(table)
+
+            # Read/Normalize
             data = odoo_search_read(model, fields)
             normalized = normalize_odoo_data(data)
             
-            # This returns the result including the 'url' field for PBI to read
-            final_result = push_to_s3(table, normalized)
+            # Push single table to S3 (updates latest.json with pre-signed URL logic)
+            push_to_s3(table, normalized)
+            
+            # Append to all_rows for the combined file
+            for row in normalized:
+                row_with_table = {"table": table}
+                row_with_table.update(row)
+                all_rows.append(row_with_table)
+        
+        # Combined File Processing
+        if len(all_rows) > 0:
+            print(f"  -> Uploading combined file with {len(all_rows)} total rows.")
+            
+            timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            combined_key = f"all_data/all_data_{timestamp}.json"
+            latest_combined_key = "all_data/latest.json"
+
+            # Push timestamped combined file
+            s3_client.put_object(
+                Bucket=S3_BUCKET,
+                Key=combined_key,
+                Body=json.dumps(all_rows),
+                ContentType="application/json"
+            )
+            # Push LATEST combined file
+            s3_client.put_object(
+                Bucket=S3_BUCKET,
+                Key=latest_combined_key,
+                Body=json.dumps(all_rows),
+                ContentType="application/json"
+            )
+            
+            # Return success message for the PBI trigger query
+            final_result = {
+                "status": "success", 
+                "message": f"Successfully triggered and updated {len(tables_to_load)} tables. Total rows: {len(all_rows)}",
+                "s3_key": latest_combined_key
+            }
+        else:
+             final_result = {"status": "success", "message": "Trigger ran, but no data found."}
+
+    elif len(tables_to_load) == 1:
+        # Single Table ETL (Read Mode)
+        table = tables_to_load[0]
+        print(f"Running SINGLE Table ETL (Read Mode) for: {table}")
+        
+        model = table_model_map.get(table)
+        fields = table_fields.get(table)
+        data = odoo_search_read(model, fields)
+        normalized = normalize_odoo_data(data)
+        
+        # This returns the result including the 'url' field
+        final_result = push_to_s3(table, normalized)
     
     return final_result
