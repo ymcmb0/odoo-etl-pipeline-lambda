@@ -17,7 +17,7 @@ S3_BUCKET = os.getenv("S3_BUCKET", "odoo-timesheet-bucket")
 # ===== Initialize S3 Client =====
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 
-# Keep last load timestamps in memory
+# Local in-memory store of write_date timestamps
 last_load_times = {}
 
 # ===== Odoo Helpers =====
@@ -111,34 +111,54 @@ def error(message):
 def lambda_handler(event, context):
     print("EVENT RECEIVED:", json.dumps(event))
 
-    # Check if it's a presigned URL request
+    # ==========================
+    # Read Query Parameters
+    # ==========================
     table = None
+    update_request = None
+
     if "queryStringParameters" in event:
         params = event.get("queryStringParameters") or {}
         table = params.get("table")
+        update_request = params.get("update")
     elif "rawQueryString" in event:
         raw_qs = event.get("rawQueryString", "")
         params = {k: v[0] for k, v in parse_qs(raw_qs).items()}
         table = params.get("table")
+        update_request = params.get("update")
 
+    # ==========================
+    # CASE 1: Return Presigned URL
+    # ==========================
     if table:
-        # Return presigned URL for the requested table
         key = f"{table}/latest.json"
         try:
             url = s3_client.generate_presigned_url(
                 ClientMethod="get_object",
                 Params={"Bucket": S3_BUCKET, "Key": key},
-                ExpiresIn=900  # 15 minutes
+                ExpiresIn=900
             )
         except Exception as e:
             return error(f"Failed to generate presigned URL: {str(e)}")
+
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
             "body": json.dumps({"url": url})
         }
 
-    # Else, treat it as a "load from Odoo & push to S3" request
+    # ==========================
+    # CASE 2: update=true -> refresh ALL tables
+    # ==========================
+    if update_request == "true":
+        event["tables"] = [
+            "projects", "sale_orders", "invoices", "partners",
+            "users", "timesheets", "project_updates"
+        ]
+
+    # ==========================
+    # Parse body if exists
+    # ==========================
     if "body" in event and event["body"]:
         try:
             body = json.loads(event["body"])
@@ -147,18 +167,24 @@ def lambda_handler(event, context):
         except Exception as e:
             print("Failed to parse body:", str(e))
 
+    # ==========================
+    # Determine tables to load
+    # ==========================
     if "table" in event:
         tables = [event["table"]]
     elif "tables" in event:
         tables = event["tables"]
     elif event.get("all"):
         tables = [
-            "projects", "sale_orders", "invoices", "partners", "users", "timesheets", "project_updates"
+            "projects", "sale_orders", "invoices", "partners",
+            "users", "timesheets", "project_updates"
         ]
     else:
         return {"status": "error", "message": "No table(s) specified"}
 
-    # Map aliases to Odoo models
+    # ==========================
+    # MODEL & FIELD DEFINITIONS
+    # ==========================
     table_model_map = {
         "projects": "project.project",
         "sale_orders": "sale.order",
@@ -183,12 +209,16 @@ def lambda_handler(event, context):
             "unit_amount","task_id","timesheet_invoice_type",
            "write_date"],
         "project_updates": ["id","name","project_id","user_id","date","write_date","progress","description"],
-        "invoices": ["id","name","partner_id","currency_id","amount_total","invoice_date","payment_state","invoice_date_due","invoice_date","invoice_payment_term_id","invoice_line_ids","state","write_date"],  
+        "invoices": ["id","name","partner_id","currency_id","amount_total","invoice_date","payment_state",
+                     "invoice_date_due","invoice_date","invoice_payment_term_id","invoice_line_ids","state","write_date"],
     }
 
     results = {}
     all_rows = []
 
+    # ==========================
+    # LOAD EACH TABLE + PUSH TO S3
+    # ==========================
     for table in tables:
         model = table_model_map.get(table)
         fields = table_fields.get(table)
@@ -211,6 +241,9 @@ def lambda_handler(event, context):
             row_with_table.update(row)
             all_rows.append(row_with_table)
 
+    # ==========================
+    # Combined File for ALL DATA
+    # ==========================
     if len(all_rows) > 0 and (len(tables) > 1 or event.get("all")):
         timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         combined_key = f"all_data/all_data_{timestamp}.json"
