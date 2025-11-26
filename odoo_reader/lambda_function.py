@@ -205,4 +205,3 @@ def lambda_handler(event, context):
         
     # API Gateway expects a dictionary response
     return final_result
-    
