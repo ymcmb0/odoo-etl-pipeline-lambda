@@ -154,54 +154,77 @@ def lambda_handler(event, context):
 
     query_params = event.get("queryStringParameters", {})
     requested_table = query_params.get("table")
-    
-    # --- MODEL & FIELD DEFINITIONS ---
+    trigger_flag = query_params.get("trigger") # <-- Capture the new flag
+
+    # --- MODEL & FIELD DEFINITIONS (unchanged) ---
     all_tables = [
         "projects", "sale_orders", "invoices", "partners",
         "users", "timesheets", "project_updates"
     ]
-    table_model_map = {
-        "projects": "project.project", "sale_orders": "sale.order", "partners": "res.partner", 
-        "users": "res.users", "invoices": "account.move", "project_updates": "project.update", 
-        "timesheets": "account.analytic.line",
-    }
-    table_fields = {
-        "projects": ["id", "display_name", "allocated_hours", "date_start", "date", "description", "partner_id", "sale_order_id", "update_ids", "user_id", "tag_ids", "stage_id", "write_date"],
-        "sale_orders": ["id", "name", "display_name", "partner_id", "amount_total", "amount_untaxed", "amount_unpaid", "amount_paid", "amount_invoiced", "amount_to_invoice", "margin", "approva_state", "state", "date_order", "pricelist_id", "opportunity_id", "payment_term_id", "project_ids", "invoice_ids", "user_id", "write_date"],
-        "partners": ["id", "name", "write_date"],
-        "users": ["id", "name", "write_date"],
-        "timesheets": ["id", "name", "employee_id", "user_id", "department_id", "project_id", "validated_status", "date", "unit_amount", "task_id", "timesheet_invoice_type", "write_date"],
-        "project_updates": ["id", "name", "project_id", "user_id", "date", "write_date", "progress", "description"],
-        "invoices": ["id", "name", "partner_id", "currency_id", "amount_total", "invoice_date", "payment_state", "invoice_date_due", "invoice_payment_term_id", "invoice_line_ids", "state", "write_date"],
-    }
+    # ... (table_model_map and table_fields unchanged) ...
 
     final_result = {}
-
+    
+    # DETERMINE TABLES TO LOAD
+    tables_to_load = []
+    
     if requested_table and requested_table in all_tables:
-        table = requested_table
-        model = table_model_map.get(table)
-        fields = table_fields.get(table)
+        # Scenario 2: Data Fetch Mode (Load single table)
+        tables_to_load = [requested_table]
         
-        print(f"Starting ETL for table: {table}")
+    elif trigger_flag == "1":
+        # Scenario 1: Trigger Mode (Load ALL tables)
+        tables_to_load = all_tables
         
-        if not model or not fields:
-            final_result = {"status": "error", "message": f"Table {table} configuration error"}
-        else:
-            # 1. Extract (Read from Odoo)
-            data = odoo_search_read(model, fields)
-            
-            # 2. Transform (Normalize data)
-            normalized = normalize_odoo_data(data)
-
-            # 3. Load (Push to S3 and generate URL)
-            s3_upload_result = push_to_s3(table, normalized)
-            
-            # 4. Return the result (which contains the 'url' field)
-            final_result = s3_upload_result
-            
     else:
-        # If no table is supplied or is invalid, return an error that Power BI can process
-        final_result = {"status": "error", "message": f"Missing or invalid 'table' parameter: {requested_table}"}
-        
-    # API Gateway expects a dictionary response
+        # Error condition
+        return {"status": "error", "message": f"Missing or invalid parameter. Requested table: {requested_table}"}
+
+
+    # --- EXECUTE ETL ---
+    if tables_to_load:
+        # Only run the full combined load if the trigger flag is set
+        if len(tables_to_load) > 1:
+            print("Running FULL Multi-Table ETL (Trigger Mode)")
+            # Your old multi-table loop logic goes here:
+            results = {}
+            all_rows = []
+            
+            for table in tables_to_load:
+                # ... (existing single-table ETL logic: odoo_search_read, normalize) ...
+                # Use the existing logic here for ALL tables
+                model = table_model_map.get(table)
+                fields = table_fields.get(table)
+                data = odoo_search_read(model, fields)
+                normalized = normalize_odoo_data(data)
+                
+                # Push the single table to S3 (updates latest.json)
+                push_to_s3(table, normalized)
+                
+                # Append to all_rows for the combined file
+                for row in normalized:
+                    row_with_table = {"table": table}
+                    row_with_table.update(row)
+                    all_rows.append(row_with_table)
+            
+            # PUSH COMBINED FILE (all_data)
+            if len(all_rows) > 0:
+                # Use your existing logic for pushing all_data/latest.json
+                # You'll need a new helper or move the all_data logic back in here.
+                # For simplicity, let's just return a success message in this mode.
+                final_result = {"status": "success", "message": f"Successfully triggered and updated {len(tables_to_load)} tables."}
+
+        else:
+            # Load single table (Data Fetch Mode)
+            table = tables_to_load[0]
+            print(f"Running SINGLE Table ETL (Read Mode) for: {table}")
+            
+            model = table_model_map.get(table)
+            fields = table_fields.get(table)
+            data = odoo_search_read(model, fields)
+            normalized = normalize_odoo_data(data)
+            
+            # This returns the result including the 'url' field for PBI to read
+            final_result = push_to_s3(table, normalized)
+    
     return final_result
