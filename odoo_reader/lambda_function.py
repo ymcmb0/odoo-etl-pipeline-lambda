@@ -3,7 +3,6 @@ import json
 import requests
 import boto3
 from datetime import datetime
-from urllib.parse import parse_qs
 
 # ===== Environment Variables =====
 ODOO_URL = os.getenv("ODOO_URL", "").strip()
@@ -99,88 +98,17 @@ def push_to_s3(table_name, data):
     )
     return {"status": "success", "s3_key": key, "rows_uploaded": len(data)}
 
-# ===== API Error Helper =====
-def error(message):
-    return {
-        "statusCode": 400,
-        "body": json.dumps({"error": message}),
-        "headers": {"Content-Type": "application/json"}
-    }
-
 # ===== Lambda Handler =====
 def lambda_handler(event, context):
     print("EVENT RECEIVED:", json.dumps(event))
 
     # ==========================
-    # Read Query Parameters
+    # FORCE ALL TABLES TO UPDATE
     # ==========================
-    table = None
-    update_request = None
-
-    if "queryStringParameters" in event:
-        params = event.get("queryStringParameters") or {}
-        table = params.get("table")
-        update_request = params.get("update")
-    elif "rawQueryString" in event:
-        raw_qs = event.get("rawQueryString", "")
-        params = {k: v[0] for k, v in parse_qs(raw_qs).items()}
-        table = params.get("table")
-        update_request = params.get("update")
-
-    # ==========================
-    # CASE 1: Return Presigned URL
-    # ==========================
-    if table:
-        key = f"{table}/latest.json"
-        try:
-            url = s3_client.generate_presigned_url(
-                ClientMethod="get_object",
-                Params={"Bucket": S3_BUCKET, "Key": key},
-                ExpiresIn=900
-            )
-        except Exception as e:
-            return error(f"Failed to generate presigned URL: {str(e)}")
-
-        return {
-            "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"url": url})
-        }
-
-    # ==========================
-    # CASE 2: update=true -> refresh ALL tables
-    # ==========================
-    if update_request == "true":
-        event["tables"] = [
-            "projects", "sale_orders", "invoices", "partners",
-            "users", "timesheets", "project_updates"
-        ]
-
-    # ==========================
-    # Parse body if exists
-    # ==========================
-    if "body" in event and event["body"]:
-        try:
-            body = json.loads(event["body"])
-            if isinstance(body, dict):
-                event.update(body)
-        except Exception as e:
-            print("Failed to parse body:", str(e))
-
-    # ==========================
-    # Determine tables to load
-    # ==========================
-    if "table" in event:
-        tables = [event["table"]]
-    elif "tables" in event:
-        tables = event["tables"]
-    elif event.get("all"):
-        tables = [
-            "projects", "sale_orders", "invoices", "partners",
-            "users", "timesheets", "project_updates"
-        ]
-    else:
-        return {"status": "error", "message": "No table(s) specified"}
+    tables = [
+        "projects", "sale_orders", "invoices", "partners",
+        "users", "timesheets", "project_updates"
+    ]
 
     # ==========================
     # MODEL & FIELD DEFINITIONS
@@ -244,7 +172,7 @@ def lambda_handler(event, context):
     # ==========================
     # Combined File for ALL DATA
     # ==========================
-    if len(all_rows) > 0 and (len(tables) > 1 or event.get("all")):
+    if len(all_rows) > 0:
         timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         combined_key = f"all_data/all_data_{timestamp}.json"
 
