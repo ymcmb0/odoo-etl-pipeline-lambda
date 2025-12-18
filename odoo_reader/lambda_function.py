@@ -161,7 +161,7 @@ def lambda_handler(event, context):
         "timesheets": "account.analytic.line",
     }
     table_fields = {
-        "projects": ["id", "display_name", "allocated_hours", "date_start", "date", "description", "partner_id", "sale_order_id", "update_ids", "user_id", "tag_ids", "stage_id", "write_date"],
+        "projects": ["id", "display_name", "allocated_hours", "date_start", "date", "description", "partner_id", "allocated_hours","total_timesheet_time","sale_order_id", "update_ids", "user_id", "tag_ids", "stage_id", "write_date"],
         "sale_orders": ["id", "name", "display_name", "partner_id", "amount_total", "amount_untaxed", "amount_unpaid", "amount_paid", "amount_invoiced", "amount_to_invoice", "margin", "approva_state", "state", "date_order", "pricelist_id", "opportunity_id", "payment_term_id", "project_ids", "invoice_ids", "user_id", "write_date"],
         "partners": ["id", "name", "write_date"],
         "users": ["id", "name", "write_date"],
